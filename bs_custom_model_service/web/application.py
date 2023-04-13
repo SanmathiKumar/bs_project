@@ -1,10 +1,9 @@
 from fastapi import FastAPI
 from fastapi.responses import UJSONResponse
-import logging
+
 from bs_custom_model_service.web.api.router import api_router
-from bs_custom_model_service.settings import settings
-from bs_custom_model_service.web.lifetime import register_startup_event, register_shutdown_event
-from importlib import metadata
+from bs_custom_model_service.web.lifetime import (register_startup_event,
+                                                  register_shutdown_event)
 
 
 def get_app() -> FastAPI:
@@ -17,7 +16,6 @@ def get_app() -> FastAPI:
     """
     app = FastAPI(
         title="bs_custom_model_service",
-        version=metadata.version("bs_custom_model_service"),
         docs_url="/api/docs",
         redoc_url="/api/redoc",
         openapi_url="/api/openapi.json",

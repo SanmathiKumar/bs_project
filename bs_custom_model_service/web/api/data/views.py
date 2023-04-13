@@ -1,12 +1,19 @@
 import io
+import tempfile
+import uuid
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+from fastapi import APIRouter, UploadFile
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
-from fastapi import APIRouter
+from starlette.responses import JSONResponse
+
 from bs_custom_model_service.web.api.models.request.csv_conversion import (
     CSVConversionRequest,
 )
-from io import StringIO
-import pandas as pd
-import numpy as np
+from bs_custom_model_service.web.core.execute import run_command, ExecutionFailedError
 
 router = APIRouter()
 
@@ -29,3 +36,23 @@ def convert_to_csv(csv_conversion_request: CSVConversionRequest) -> StreamingRes
     response = StreamingResponse(iter([stream.getvalue()]), media_type="text/csv")
     response.headers["Content-Disposition"] = "attachment; filename=converted.csv"
     return response
+
+
+@router.post("/exec")
+async def execute_python_script(file: UploadFile):
+    """
+    Executes any script uploaded as a python program.
+
+    :param file: Uploaded py script.
+    :return: Result of execution.
+    """
+    contents = await file.read()
+    with tempfile.TemporaryDirectory() as tempdir:
+        script_file = Path(tempdir) / f"{uuid.uuid4()}.py"
+        script_file.write_bytes(contents)
+        try:
+            output = run_command(["python", script_file.as_posix()])
+            response = {"output": output, "is_exception_raised": False}
+        except ExecutionFailedError as e:
+            response = {"output": str(e), "is_exception_raised": True}
+    return JSONResponse(content=jsonable_encoder(response))
