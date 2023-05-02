@@ -2,20 +2,19 @@ import io
 import tempfile
 import uuid
 from pathlib import Path
-from fastapi import FastAPI, File
+
 import numpy as np
 import pandas as pd
 from fastapi import APIRouter, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
-from starlette.responses import JSONResponse
-import os
-import subprocess
+from starlette.responses import JSONResponse, Response
 
 from bs_custom_model_service.web.api.models.request.csv_conversion import (
     CSVConversionRequest,
 )
 from bs_custom_model_service.web.core.execute import run_command, ExecutionFailedError
+from bs_custom_model_service.web.utils.zip import create_zip_from_folder_inmem
 
 router = APIRouter()
 
@@ -40,7 +39,7 @@ def convert_to_csv(csv_conversion_request: CSVConversionRequest) -> StreamingRes
     return response
 
 
-@router.post("/exec")
+@router.post("/exec_no_input")
 async def execute_python_script(file: UploadFile):
     """
     Executes any script uploaded as a python program.
@@ -60,37 +59,46 @@ async def execute_python_script(file: UploadFile):
             response = {"output": str(e), "is_exception_raised": True}
     return JSONResponse(content=jsonable_encoder(response))
 
-@router.post("/script and data file/")
-async def process_data(script: UploadFile, data: UploadFile):
 
-    # Save the data file to a temporary directory
-    data_contents = await data.read()
+@router.post("/exec")
+async def execute_python_script(script: UploadFile, input_file: UploadFile):
+    """
+    Executes any script uploaded as a python program.
+
+    :param script: Uploaded py script.
+    :param input_file: Uploaded input file.
+    :return: Result of execution.
+    """
+
     with tempfile.TemporaryDirectory() as tempdir:
-        data_file = Path(tempdir) / f"{uuid.uuid4()}.json"
-        data_file.write_bytes(data_contents)
-
-    # Save the script file to a temporary directory
-    script_contents = await script.read()
-    with tempfile.TemporaryDirectory() as tempdir:
-        script_file = Path(tempdir) / f"{uuid.uuid4()}.py"
-        script_file.write_bytes(script_contents)
-
-
-    # Run the script file on the data file
-    # cmd = f"python {script_file} {data_file}"
-    # output = subprocess.check_output(cmd, shell=True, text=True)
-    #
-    # return {"output": output}
+        tempdir = Path(tempdir)
+        if not script.filename.endswith(".py"):
+            return Response(status_code=400, content={
+                "message": "Invalid script file. Must be a .py file."})
+        script_file = tempdir / f"{uuid.uuid4()}-{script.filename}"
+        script_file.write_bytes(await script.read())
+        input_file_path = tempdir / f"{uuid.uuid4()}-{input_file.filename}"
+        input_file_path.write_bytes(await input_file.read())
         try:
-            output = run_command(["python", script_file.as_posix()])
-            response = {"output": output, "is_exception_raised": False}
+            output = run_command(
+                ["python", script_file.as_posix(), input_file_path.as_posix()]
+            )
+            headers = {"X-Script-Raised-Exception": "false"}
+            with open(tempdir / f"{script_file.stem}_execution_output.txt", "w") as f:
+                f.write(output)
         except ExecutionFailedError as e:
-            response = {"output": str(e), "is_exception_raised": True}
-    return JSONResponse(content=jsonable_encoder(response))
+            headers = {"X-Script-Raised-Exception": "true"}
+            with open(tempdir / f"{script_file.stem}_execution_output.txt", "w") as f:
+                f.write(str(e))
+        input_file_path.unlink()
+        script_file.unlink()
 
-@router.post("/uploadfile/")
-async def create_upload_file(file: UploadFile = File(...)):
-    contents = await file.read()
-    return {"filename": file.filename, "contents": contents}
-
-
+        if len(list(tempdir.glob("*"))) == 0:
+            return Response(headers=headers)
+        zip_io = create_zip_from_folder_inmem(tempdir)
+        response_object = Response(zip_io.getvalue(),
+                                   media_type="application/x-zip-compressed",
+                                   headers=headers)
+        response_object.headers[
+            'Content-Disposition'] = f'attachment; filename=result.zip'
+        return response_object
